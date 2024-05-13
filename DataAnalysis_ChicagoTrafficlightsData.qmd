@@ -1,0 +1,308 @@
+---
+title: "Challenge 1 Group A1"
+author: "Group 1"
+format:
+  html: 
+    smooth-scroll: true
+    toc: true
+    toc-location: left
+    embed-resources: true
+editor: visual
+theme: slate
+---
+
+## Introduction
+
+The City of Chicago's crash data, our first R challenge, encompasses detailed traffic accident information within city limits, managed by the Chicago Police Department (CPD). This data, extracted from CPD's E-Crash system and devoid of personal details, includes both self-reported minor incidents and those documented by officers on-site. It covers various crash aspects like street conditions and weather, though these may not always match official records. Amendments are made if new details emerge. Notably, the dataset excludes incidents outside CPD jurisdiction, such as on interstate highways. While Illinois law specifies reportable crashes based on injury or significant property damage, CPD records all reported incidents, potentially leading to discrepancies with the official state dataset. This challenge offers a unique opportunity to dive into real-world data analysis with R.
+
+## Preliminary Work
+
+Load csv files into R using a proper function. You should have 3 data frames in your environment, with names: crashes, vehicles and people.
+
+```{r}
+library(readr)
+vehicles <- read_csv("../DATA/vehicles_2022.csv", 'show_col_types' = FALSE)
+
+people <- read_csv("../DATA/people_2022.csv", 'show_col_types' = FALSE)
+
+crashes <- read_csv("../DATA/crashes_2022.csv", 'show_col_types' = FALSE)
+```
+
+### Creating and updating columns
+
+```{r}
+library(dplyr)
+library(lubridate)
+
+crashes <- crashes %>%
+  mutate(
+    INJURIES = ifelse(INJURIES_TOTAL > 0, "INJURIES", "NONE"), # Create INJURIES column
+    REPORT_TYPE = ifelse(is.na(REPORT_TYPE), "UNKNOWN", REPORT_TYPE), # Update REPORT_TYPE for NAs
+    MONTH = toupper(format(DATE, "%m")), # Extract and convert MONTH from DATE
+    WEEKDAY = toupper(weekdays(DATE)), # Extract and convert WEEKDAY from DATE
+    HOUR = toupper(format(DATE, "%H")) # Extract and convert HOUR from DATE
+  )
+```
+
+### 1.1 Compute the proportion of injuries
+
+```{r}
+proportion_of_injuries <- sum(crashes$INJURIES == "INJURIES", na.rm = TRUE) / sum(!is.na(crashes$INJURIES))*100
+print(paste(round(proportion_of_injuries,2), '%', sep=" "))
+```
+
+### 1.2 Compute the proportion of injuries by WEATHER_CONDITION
+
+```{r}
+
+# First we filtered for crashes with injuries and filtered out the crashes for which we dont know the weather condition:
+filter_out_unknown <- crashes %>%
+  filter(WEATHER_CONDITION != 'UNKNOWN', INJURIES == "INJURIES")
+
+# Next we calculate the total number of crashes such that we have our
+total_accidents_with_injuries_weath_known <-  sum(!is.na(filter_out_unknown$WEATHER_CONDITION))
+
+# Next, we created a dataframe with each weather type, how many crashes they represent and the proportion of crashes that this weather type represents
+accidents_grouped_by_weather <- crashes %>%
+  select(WEATHER_CONDITION, INJURIES) %>%
+  group_by(WEATHER_CONDITION) %>%
+  filter(WEATHER_CONDITION != "UNKNOWN") %>%
+  summarize(number = sum(INJURIES == "INJURIES", na.rm = TRUE), total = total_accidents_with_injuries_weath_known, proportion = (number / total)*100)
+
+# Finally, we selected teh FOG/SMOKE/HAZE weather condition out of the df created above
+proportion_of_injury_if_fog_smoke_haze <- as.numeric(accidents_grouped_by_weather[accidents_grouped_by_weather$"WEATHER_CONDITION"=="FOG/SMOKE/HAZE", 'proportion'])*100
+
+print(paste(round(proportion_of_injury_if_fog_smoke_haze,2), '%', sep=" "))
+
+```
+
+### 1.3 Under which weather condition type have we more NAs?
+
+```{r}
+# We first created a table with each weather conditiona and counted their associated NAs
+
+na_count_by_weather <- crashes %>%
+  group_by(WEATHER_CONDITION) %>%
+  summarise(NA_Count = sum(is.na(INJURIES))) %>%
+  arrange(desc(NA_Count))
+
+# We then filtered for the first value in the dataframe given that it was ordered descending
+weather_most_nas <- as.character(na_count_by_weather[1,1])
+weather_most_nas
+```
+
+### 1.4 Which is the weekday with most crashes?
+
+```{r}
+# We first created a table with the weekdays and the count of crashes associated with each
+
+crashes_weekday <- crashes %>%
+  mutate(WEEKDAY = wday(DATE, label = TRUE, abbr = FALSE)) %>%
+  group_by(WEEKDAY) %>%
+  summarise(Crash_Count = n()) %>%
+  arrange(desc(Crash_Count))
+
+# And similarly, we selected the first weekday in the table given it was ordered descending
+weekday_with_most_crashes <- as.character(crashes_weekday$WEEKDAY[1])
+weekday_with_most_crashes
+```
+
+### 1.5 Do we observe differences among Male and Female drivers involved in injuries crashes. Run a T Test and write your conclusions.
+
+```{r}
+# For this question, we first merged two dataframes by a column in common
+crashes_vehicles <- merge(crashes, vehicles, by = "RD_NO", all = TRUE)
+
+# Then merged with the third df 'people'
+final_merged_df <- merge(crashes_vehicles, people, by = "RD_NO", all = TRUE)
+
+injuries_by_driver <- final_merged_df %>%
+  filter(PERSON_TYPE == "DRIVER", SEX == c('M', 'F'))  %>%
+  select(SEX, INJURIES)
+
+injuries_by_driver$binary_gender <- ifelse(injuries_by_driver$SEX == "M", 1, 0)
+injuries_by_driver$injuries_binary <- ifelse(injuries_by_driver$INJURIES == "INJURIES", 1, 0)
+
+t_test <- t.test(injuries_binary ~ binary_gender, data = injuries_by_driver)
+
+
+# Conclusion:
+# With the t-test we can rule out the hypothesis that there is no difference between Male and Female drivers. We can see that in our dataset, females have a higher mean of crashes with injuries.
+```
+
+### 1.6 Compute quantiles (from 0% to 100% in intervals of 5%) of the number of vehicles involved in the same crash.
+
+```{r}
+library(tidyr)
+
+quantiles_unit_no <- quantile(final_merged_df$UNIT_NO, probs = seq(0, 1, 0.05), na.rm = TRUE)
+print(quantiles_unit_no)
+```
+
+### 1.7 Create a list of VEHICLE_TYPE values with the % of crashes for each weekday.
+
+```{r}
+library(tidyr)
+
+# Creating a list of vehicles types
+
+unique_vehicles <- unique(vehicles$VEHICLE_TYPE[!is.na(vehicles$VEHICLE_TYPE)])
+vehicle_day_crash <- list()
+
+for (vehicle_type in unique_vehicles) {
+  vehicle_crashes <- subset(crashes, CRASH_RECORD_ID %in% vehicles$CRASH_RECORD_ID[vehicles$VEHICLE_TYPE == vehicle_type])
+  
+  weekday_counts <- table(vehicle_crashes$WEEKDAY)
+  weekday_percentages <- weekday_counts / sum(weekday_counts)
+  
+  vehicle_day_crash[[vehicle_type]] <- weekday_percentages
+}
+
+vehicle_day_crash_list
+```
+
+### 1.8 Create a new dataset from crashes called crashes_model, keeping only some columns. Fit a logistic regression to predict INJURIES in terms of all other features. Which is the accuracy level of the model? Write your conclusions about this value.
+
+```{r}
+
+# First we created the df with the desired dependent and independent variables and filtered out any instances with missing values
+crashes_model <- crashes %>%
+  select(INJURIES, REPORT_TYPE, HOUR, NUM_UNITS,
+         POSTED_SPEED_LIMIT, WEATHER_CONDITION, LIGHTING_CONDITION,
+         ROADWAY_SURFACE_COND, FIRST_CRASH_TYPE, TRAFFICWAY_TYPE,
+         PRIM_CONTRIBUTORY_CAUSE, LATITUDE, LONGITUDE) %>%
+  filter(complete.cases(.))
+
+crashes_model$INJURIES <- factor(crashes_model$INJURIES, levels = c("INJURIES", "NONE"))
+
+# Now we split the data into two new dataframes for training and testing the model
+
+library(caret)
+set.seed(123)
+train_percentage <- 0.8
+
+train_indices <- createDataPartition(crashes_model$INJURIES, p = train_percentage, list = FALSE)
+
+train_data <- crashes_model[train_indices, ]
+test_data <- crashes_model[-train_indices, ]
+
+# Creating the model
+model <- glm(INJURIES ~ REPORT_TYPE + HOUR + NUM_UNITS +
+               POSTED_SPEED_LIMIT + WEATHER_CONDITION + LIGHTING_CONDITION +
+               ROADWAY_SURFACE_COND + FIRST_CRASH_TYPE + TRAFFICWAY_TYPE +
+               PRIM_CONTRIBUTORY_CAUSE + LATITUDE + LONGITUDE, 
+             data = train_data, 
+             family = "binomial")
+
+
+predictions <- predict(model, newdata = test_data, type = "response")
+predicted_classes <- ifelse(predictions < 0.5, "INJURIES", "NONE")
+correct_predictions <- predicted_classes == test_data$INJURIES
+accuracy <- sum(correct_predictions) / length(correct_predictions)
+
+print(paste("Accuracy:", accuracy*100, "%", sep=" "))
+```
+
+## 2- Plotting
+
+### 2.1 Create a plot showing the evolution of the number of crashes amongst the year (day level). Differentiate between the different values in INJURIES column.
+
+```{r}
+library(ggplot2)
+library(lubridate)
+
+crashes$Date <- as.Date(crashes$DATE)
+
+# Aggregate data by Date and INJURIES
+daily_crashes <- crashes %>%
+  group_by(Date, INJURIES) %>%
+  summarise(Count = n(), .groups = 'drop')
+
+# Plot
+ggplot(daily_crashes, aes(x = Date, y = Count, color = INJURIES)) +
+  geom_line() +
+  labs(title = "Daily Crashes Over the Year", x = "Date", y = "Number of Crashes")
+```
+
+### 2.2 Create a boxplot of crashes amongst weekdays.
+
+```{r}
+library(tidyverse)
+
+# Create sequence of dates from "2021-12-31" to "2022-12-31"
+date_sequence <- seq(as.Date("2021-12-31"), as.Date("2022-12-31"), by = "day")
+weekdays <- toupper(weekdays(date_sequence))
+every_day <- data.frame(new = paste(date_sequence, weekdays, sep = " "))
+
+# Creating a df which groups crashes for individual days of the year
+grouping_crashes_day <- crashes %>% 
+  mutate(date = as.Date(DATE)) %>%
+  mutate(new = str_c(date, WEEKDAY, sep = " ")) %>%
+  group_by(new) %>%
+  summarize(count = n())
+
+# Merging the two dataframes so that we get each day of the year and their associated crash numbers
+crashes_by_day <- merge(grouping_crashes_day, every_day, by = "new", all.x = TRUE)
+
+# Separating the date from the weekday
+crashes_by_day_plot <- crashes_by_day %>%
+  separate(new, into = c("exact_date", "weekday"), sep = " ")
+
+weekday_order <- c("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY")
+
+crashes_by_day_plot$weekday <- factor(crashes_by_day_plot$weekday, levels = weekday_order)
+
+ggplot(crashes_by_day_plot, aes(x = weekday, y = count)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Crashes by Weekday", x = "Weekday", y = "Count of Crashes") +
+  scale_x_discrete(labels = weekday_order)
+
+
+
+# For this exercise, creating the sequence was not necessary because there were no days of the year inwhich there were no crashes. However, it is good practice because if a day did not have a crash, it would not be included in the data and the average would be higher than reality.
+```
+
+### 2.3 Create a heatmap of crashes by weekdays and hour. Which are your conclusions about the results?
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(viridis)
+
+#Calculate count of crashes for each weekday and hour
+crashes_count <- crashes %>%
+group_by(WEEKDAY, HOUR) %>%
+summarise(count = n())
+
+#Create heatmap
+ggplot(crashes_count, aes(x = HOUR, y = WEEKDAY, fill = count)) +
+geom_tile() +
+scale_fill_viridis(name = "Crash Count") +
+labs(title = "Heatmap of Crashes by Weekday and Hour", x = "Hour of Day", y = "Weekday")
+```
+
+Conclusions:The heatmap shows that most acxidents tend to happen during weekdays and in midday hours, this makes a lot of sense as it is the moment where people use cars the most (probably the moment where people may leave work, schools may also end, making the total number of cars in the road be very high).We can clearly see that there is a low number of accidents in hours where there are less cars in the road such as night and the weekends.It could also be worth mentioning that friday afternoon has more crashes than other afternoons and it may be because people leave for the weekend, therefore having more cars on the road.
+
+### 2.4 Create a plot to map the crashes using the coordinates.
+
+```{r}
+library(ggplot2)
+
+# First we filtered out instances with longitudes and latitudes of 0
+two_four <- crashes %>%
+filter(LONGITUDE != 0, LATITUDE != 0)
+
+# Next, we created a scatterplot
+ggplot(two_four, aes(x = LONGITUDE, y = LATITUDE)) +
+geom_point(alpha = 1/20, size = 0.5) +
+labs(x = "Longitude", y = "Latitude", title = "Map of Crashes")
+
+
+
+# Alternatively, we considered a more detailed, interactive map but unfortunately it does not work for Quarto Documents
+
+library(tidyverse)
+library(sf)
+library(mapview)
+# mapview(two_four, xcol = "LONGITUDE", ycol = "LATITUDE", crs = 4269, grid = FALSE)
+```
